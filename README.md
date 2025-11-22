@@ -1,5 +1,5 @@
 # CourseMirror
-
+     
 A read-only mirror application and cloud for Canvas LMS that syncs course data every 5 seconds. Perfect for hackathons and testing Canvas API integrations.
 
 ## 🎯 Purpose
