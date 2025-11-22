@@ -207,17 +207,9 @@ PORT=3001
 
       const user = await response.json();
       
-      // Clear old cache data before switching tokens
-      const cachePath = path.join(__dirname, '../data/cache.json');
-      try {
-        await fs.unlink(cachePath);
-        console.log('🗑️  Cleared old cache data');
-      } catch (err) {
-        // Cache file might not exist, that's okay
-        if (err.code !== 'ENOENT') {
-          console.error('Error clearing cache:', err);
-        }
-      }
+      // DO NOT clear cache - preserve all courses even when switching tokens
+      // Courses are preserved in local storage and never deleted
+      console.log('📦 Preserving existing cache data - courses are never deleted');
       
       // Restart sync service with new credentials
       stopSyncService();
@@ -295,16 +287,10 @@ PORT=3001
       console.error('Error clearing .env file:', err);
     }
 
-    // Clear cache
-    const cachePath = path.join(__dirname, '../data/cache.json');
-    try {
-      await fs.unlink(cachePath);
-      console.log('🗑️  Cleared cache data');
-    } catch (err) {
-      if (err.code !== 'ENOENT') {
-        console.error('Error clearing cache:', err);
-      }
-    }
+    // DO NOT clear cache - preserve all courses even on sign out
+    // Courses are preserved in local storage and never deleted
+    // Only clear credentials, but keep course data
+    console.log('📦 Preserving cache data on sign out - courses are never deleted');
 
     // Stop sync service
     const { stopSyncService } = await import('../services/syncService.js');

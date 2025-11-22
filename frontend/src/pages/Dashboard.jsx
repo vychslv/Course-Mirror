@@ -13,6 +13,14 @@ export default function Dashboard({ data, isLoading, onSignOut }) {
   const user = data?.user || {}
   const isProfessor = userRoles.includes('professor')
   const isStudent = userRoles.includes('student')
+  
+  // Debug: Log all courses including past courses
+  useEffect(() => {
+    console.log('📚 All courses:', courses.length)
+    console.log('📚 Courses list:', courses.map(c => ({ id: c.id, name: c.name, pastCourse: c.pastCourse || c.previousQuarter })))
+    const pastCourses = courses.filter(c => c.pastCourse || c.previousQuarter)
+    console.log('📚 Past courses:', pastCourses.length, pastCourses.map(c => c.name))
+  }, [courses])
 
   const handleSignOut = async () => {
     if (!confirm('Are you sure you want to sign out?')) {
@@ -96,8 +104,13 @@ export default function Dashboard({ data, isLoading, onSignOut }) {
                     <div className="flex items-center gap-2">
                       <div className={`w-3 h-3 rounded-full ${color.dot}`}></div>
                       <div className="flex-1">
-                        <div className={`font-medium ${isSelected ? color.text : 'text-gray-900'}`}>
+                        <div className={`font-medium ${isSelected ? color.text : 'text-gray-900'} flex items-center gap-2`}>
                           {course.name}
+                          {(course.previousQuarter || course.pastCourse) && (
+                            <span className="px-2 py-0.5 text-xs font-medium bg-gray-200 text-gray-700 rounded">
+                              Past Course
+                            </span>
+                          )}
                         </div>
                         {course.course_code && (
                           <div className={`text-xs ${isSelected ? color.textLight : 'text-gray-600'}`}>

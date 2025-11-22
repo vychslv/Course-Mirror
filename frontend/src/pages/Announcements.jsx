@@ -82,8 +82,13 @@ export default function Announcements({ data, isLoading }) {
                 <div className="flex items-center gap-2">
                   <div className={`w-3 h-3 rounded-full ${color.dot}`}></div>
                   <div className="flex-1">
-                    <div className={`font-medium ${isSelected ? color.text : 'text-gray-900'}`}>
+                    <div className={`font-medium ${isSelected ? color.text : 'text-gray-900'} flex items-center gap-2`}>
                       {course.name}
+                      {(course.previousQuarter || course.pastCourse) && (
+                        <span className="px-2 py-0.5 text-xs font-medium bg-gray-200 text-gray-700 rounded">
+                          Past Course
+                        </span>
+                      )}
                     </div>
                     {course.course_code && (
                       <div className={`text-xs ${isSelected ? color.textLight : 'text-gray-600'}`}>

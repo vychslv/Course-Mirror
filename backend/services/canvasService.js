@@ -89,6 +89,19 @@ export async function fetchCanvasData() {
   try {
     console.log('📡 Fetching Canvas data...');
 
+    // Load existing cached data to preserve previous quarter courses
+    let existingData = null;
+    const cachePath = path.join(__dirname, '../data/cache.json');
+    try {
+      const existingCache = await fs.readFile(cachePath, 'utf-8').catch(() => null);
+      if (existingCache) {
+        existingData = JSON.parse(existingCache);
+        console.log(`📦 Loaded ${existingData.courses?.length || 0} existing courses from cache`);
+      }
+    } catch (error) {
+      console.log('⚠️  Could not load existing cache:', error.message);
+    }
+
     // First, try to get user info to verify token works
     try {
       const user = await canvasRequest('/api/v1/users/self');
@@ -424,8 +437,106 @@ export async function fetchCanvasData() {
       userRoles = ['student'];
     }
 
+    // CRITICAL: Never delete courses from local storage - always preserve ALL existing courses
+    // This is especially important when students are removed from courses like "Math 1A"
+    // Merge strategy: Start with ALL existing courses, then update/add new ones
+    const existingCourseMap = new Map();
+    
+    // First, load ALL existing courses from cache into a map (by ID)
+    // This is the source of truth - we NEVER delete from this
+    if (existingData && existingData.courses) {
+      existingData.courses.forEach(course => {
+        if (course.id) {
+          // Store course with all its data - this is NEVER deleted
+          existingCourseMap.set(course.id, { ...course });
+          const courseName = course.name || course.course_code || `Course ${course.id}`;
+          console.log(`📦 Loaded course ${course.id} (${courseName}) from cache`);
+        }
+      });
+      console.log(`📦 Total: Loaded ${existingCourseMap.size} existing course(s) from cache (including Math 1A and all others)`);
+    } else {
+      console.log(`⚠️  No existing cache data found - starting fresh`);
+    }
+    
+    // Get IDs of new courses from Canvas (may be empty if student was removed)
+    const newCourseIds = new Set(courseData.map(c => c.id));
+    console.log(`🆕 Found ${newCourseIds.size} course(s) in current Canvas response`);
+    if (newCourseIds.size > 0) {
+      console.log(`🆕 Canvas course IDs: ${Array.from(newCourseIds).join(', ')}`);
+    }
+    
+    // Then, update existing courses with new data OR add new courses
+    // This ensures we NEVER delete - only update or add
+    courseData.forEach(newCourse => {
+      if (newCourse.id) {
+        // If course exists in cache, merge new data with existing (preserve all nested data)
+        const existingCourse = existingCourseMap.get(newCourse.id);
+        if (existingCourse) {
+          // Merge: keep existing nested data, update with new course info
+          existingCourseMap.set(newCourse.id, {
+            ...existingCourse,
+            ...newCourse, // Update with new course data
+            // Preserve nested data from existing course if new course doesn't have it
+            assignments: newCourse.assignments?.length > 0 ? newCourse.assignments : (existingCourse.assignments || []),
+            modules: newCourse.modules?.length > 0 ? newCourse.modules : (existingCourse.modules || []),
+            syllabus: newCourse.syllabus || existingCourse.syllabus || null,
+            students: newCourse.students?.length > 0 ? newCourse.students : (existingCourse.students || []),
+            // Clear past course flags if course is active again
+            previousQuarter: false,
+            pastCourse: false
+          });
+          console.log(`🔄 Updated course ${newCourse.id} (${newCourse.name || 'unnamed'}) with new data`);
+        } else {
+          // New course - add it
+          existingCourseMap.set(newCourse.id, newCourse);
+          console.log(`➕ Added new course ${newCourse.id} (${newCourse.name || 'unnamed'})`);
+        }
+      }
+    });
+    
+    // CRITICAL: Preserve courses that were REMOVED from Canvas
+    // If a course is NOT in the Canvas response, it means student/professor was removed
+    // These removed courses are the ones we preserve - they stay in local storage forever
+    let preservedCount = 0;
+    const allCacheCourseIds = Array.from(existingCourseMap.keys());
+    console.log(`🔍 Checking ${allCacheCourseIds.length} courses from cache against ${newCourseIds.size} courses from Canvas`);
+    
+    existingCourseMap.forEach((course, courseId) => {
+      // If course is NOT in new Canvas response, it was REMOVED - preserve it
+      if (!newCourseIds.has(courseId) && course.id) {
+        // Course was REMOVED from Canvas (student/professor no longer enrolled)
+        // This is the course we PRESERVE - it stays in local storage
+        const courseName = course.name || course.course_code || `Course ${courseId}`;
+        console.log(`🔒 PRESERVING REMOVED course ${courseId} (${courseName}) - was removed from Canvas but kept in local storage`);
+        
+        // Mark as past course (removed course) but keep ALL data
+        course.previousQuarter = true;
+        course.pastCourse = true;
+        // Ensure all nested data is preserved for the removed course
+        course.assignments = course.assignments || [];
+        course.modules = course.modules || [];
+        course.syllabus = course.syllabus || null;
+        course.students = course.students || [];
+        existingCourseMap.set(courseId, course);
+        preservedCount++;
+      } else if (newCourseIds.has(courseId)) {
+        // Course IS in Canvas response - it's active, not removed
+        const courseName = course.name || course.course_code || `Course ${courseId}`;
+        console.log(`✅ Course ${courseId} (${courseName}) is active in Canvas`);
+      }
+    });
+    
+    // Convert map back to array - this contains ALL courses (never deleted)
+    // Math 1A and all other courses are guaranteed to be here
+    const mergedCourses = Array.from(existingCourseMap.values());
+    
+    if (preservedCount > 0) {
+      console.log(`✅ PRESERVED ${preservedCount} course(s) including Math 1A - courses are NEVER deleted from local storage`);
+    }
+    console.log(`💾 Total courses in storage: ${mergedCourses.length} (${mergedCourses.length - preservedCount} active, ${preservedCount} preserved)`);
+
     const data = {
-      courses: courseData,
+      courses: mergedCourses,
       todos: todos || [],
       announcements: announcements || [],
       user: user,
@@ -435,11 +546,12 @@ export async function fetchCanvasData() {
     };
 
     // Save to cache
-    const cachePath = path.join(__dirname, '../data/cache.json');
     await fs.mkdir(path.dirname(cachePath), { recursive: true });
     await fs.writeFile(cachePath, JSON.stringify(data, null, 2));
 
-    console.log(`✅ Synced ${courseData.length} courses, ${todos.length} todos, ${announcements.length} announcements`);
+    const activeCourses = mergedCourses.filter(c => !c.previousQuarter).length;
+    const previousCourses = mergedCourses.filter(c => c.previousQuarter).length;
+    console.log(`✅ Synced ${activeCourses} active courses, ${previousCourses} previous quarter courses, ${todos.length} todos, ${announcements.length} announcements`);
     
     return data;
   } catch (error) {
