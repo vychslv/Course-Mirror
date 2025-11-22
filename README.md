@@ -5,8 +5,7 @@ A read-only mirror application and cloud for Canvas LMS that syncs course data e
 ## 🎯 Purpose
 
 - **READ-ONLY**: This app does NOT modify Canvas. It only fetches data using GET requests.
-- **Real-time Sync**: Automatically refreshes course data every 5 seconds.
-- **Student View**: Mirrors what a student can see in Canvas.
+- **Canvas View**: Mirrors what a student and professors can see in Canvas.
 - **No Modifications**: Cannot alter modules, assignments, or submissions.
 
 ## 🚀 Quick Start
