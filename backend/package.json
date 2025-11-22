@@ -1,0 +1,26 @@
+{
+  "name": "canvas-live-mirror-backend",
+  "version": "1.0.0",
+  "description": "Backend for Canvas Live Mirror - Read-only Canvas data sync",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "keywords": [
+    "canvas",
+    "lms",
+    "mirror"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "cheerio": "^1.1.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "jsdom": "^27.2.0",
+    "node-fetch": "^3.3.2"
+  }
+}
