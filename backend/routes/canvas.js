@@ -1,6 +1,6 @@
 import express from 'express';
 import { fetchCanvasData } from '../services/canvasService.js';
-import { startSyncService, stopSyncService } from '../services/syncService.js';
+import { startSyncService, stopSyncService, getSyncStatus } from '../services/syncService.js';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -11,6 +11,8 @@ const __dirname = path.dirname(__filename);
 const router = express.Router();
 
 // Proxy endpoint for Canvas files (with authentication)
+// Note: Canvas API enforces file access permissions based on the access token.
+// Users can only access files from courses they have access to.
 router.get('/file/:fileId', async (req, res) => {
   try {
     const { fileId } = req.params;
@@ -21,26 +23,69 @@ router.get('/file/:fileId', async (req, res) => {
       return res.status(500).json({ error: 'Canvas not configured' });
     }
 
-    // Fetch file from Canvas with authentication
     const fetch = (await import('node-fetch')).default;
-    const fileUrl = `${CANVAS_BASE_URL}/api/v1/files/${fileId}?download=1`;
-    const response = await fetch(fileUrl, {
+    
+    // Fetch file metadata first to get content-type and filename efficiently
+    // This is necessary to determine if it's a PDF and get the proper filename
+    const fileInfoUrl = `${CANVAS_BASE_URL}/api/v1/files/${fileId}`;
+    const fileInfoResponse = await fetch(fileInfoUrl, {
       headers: {
         'Authorization': `Bearer ${CANVAS_ACCESS_TOKEN}`
       }
     });
 
-    if (!response.ok) {
-      return res.status(response.status).json({ error: 'File not found' });
+    if (!fileInfoResponse.ok) {
+      return res.status(fileInfoResponse.status).json({ error: 'File not found or access denied' });
     }
 
-    // Get content type and set headers
-    const contentType = response.headers.get('content-type') || 'application/octet-stream';
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('Content-Disposition', response.headers.get('content-disposition') || `attachment`);
+    const fileInfo = await fileInfoResponse.json();
+    const contentType = fileInfo['content-type'] || 'application/octet-stream';
+    const filename = fileInfo.display_name || fileInfo.filename || 'file';
 
-    // Stream the file
-    response.body.pipe(res);
+    // Use Canvas file download URL - this gives us the actual binary file
+    // Canvas provides a pre-authenticated URL in the file info, or we construct it
+    let fileUrl = fileInfo.url;
+    
+    // If fileInfo.url exists and includes access_token, use it directly
+    // Otherwise, construct the download URL with our token
+    if (!fileUrl || (!fileUrl.includes('access_token') && !fileUrl.includes(CANVAS_BASE_URL))) {
+      // Construct download URL with access token
+      fileUrl = `${CANVAS_BASE_URL}/api/v1/files/${fileId}?download=1`;
+    }
+
+    // Fetch the actual file content as binary stream
+    const fileResponse = await fetch(fileUrl, {
+      headers: {
+        'Authorization': `Bearer ${CANVAS_ACCESS_TOKEN}`
+      }
+    });
+
+    if (!fileResponse.ok) {
+      const errorText = await fileResponse.text().catch(() => 'Unknown error');
+      console.error(`Failed to fetch file ${fileId}: ${fileResponse.status} - ${errorText}`);
+      return res.status(fileResponse.status).json({ error: 'Failed to fetch file content' });
+    }
+
+    // Set proper headers before streaming
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    
+    // Copy content length if available
+    const contentLength = fileResponse.headers.get('content-length');
+    if (contentLength) {
+      res.setHeader('Content-Length', contentLength);
+    }
+
+    // Stream the binary file content directly to response
+    // node-fetch v2 returns a readable stream in body
+    if (fileResponse.body) {
+      fileResponse.body.pipe(res);
+    } else {
+      // Fallback: convert to buffer if body is not a stream
+      const arrayBuffer = await fileResponse.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      res.send(buffer);
+    }
   } catch (error) {
     console.error('Error proxying file:', error);
     res.status(500).json({ error: 'Failed to fetch file' });
@@ -64,13 +109,37 @@ router.get('/status', async (req, res) => {
     const cachePath = path.join(__dirname, '../data/cache.json');
     const data = await fs.readFile(cachePath, 'utf-8');
     const parsed = JSON.parse(data);
+    
+    // Check if sync service is actually running
+    const syncServiceStatus = getSyncStatus();
+    const status = syncServiceStatus.isRunning ? 'active' : 'inactive';
+    
     res.json({
       lastSynced: parsed.lastSynced,
       timestamp: parsed.timestamp,
-      status: 'active'
+      status: status,
+      isRunning: syncServiceStatus.isRunning,
+      isSyncing: syncServiceStatus.isSyncing
     });
   } catch (error) {
-    res.status(404).json({ error: 'No sync data available' });
+    // Check if sync service is running even if cache doesn't exist
+    const syncServiceStatus = getSyncStatus();
+    if (syncServiceStatus.isRunning) {
+      res.json({
+        status: 'active',
+        isRunning: true,
+        isSyncing: syncServiceStatus.isSyncing,
+        lastSynced: null,
+        timestamp: null
+      });
+    } else {
+      res.status(404).json({ 
+        error: 'No sync data available',
+        status: 'inactive',
+        isRunning: false,
+        isSyncing: false
+      });
+    }
   }
 });
 

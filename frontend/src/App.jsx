@@ -8,6 +8,7 @@ import Assignments from './pages/Assignments'
 import Modules from './pages/Modules'
 import Syllabus from './pages/Syllabus'
 import Students from './pages/Students'
+import Sync from './pages/Sync'
 import Setup from './pages/Setup'
 import ProtectedRoute from './components/ProtectedRoute'
 
@@ -106,6 +107,19 @@ function AppRoutes({ isConfigured, syncStatus, canvasData, setIsConfigured, trig
             <>
               {isLoading && <LoadingScreen message="Loading students..." />}
               <Students data={canvasData} isLoading={isLoading} />
+            </>
+          ) : (
+            <Navigate to="/login" replace />
+          )
+        }
+      />
+      <Route
+        path="/sync"
+        element={
+          isConfigured ? (
+            <>
+              {isLoading && <LoadingScreen message="Loading sync status..." />}
+              <Sync data={canvasData} isLoading={isLoading} />
             </>
           ) : (
             <Navigate to="/login" replace />

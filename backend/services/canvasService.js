@@ -67,6 +67,23 @@ async function canvasRequest(endpoint) {
   return response.json();
 }
 
+// Helper to fetch all enrollments with pagination
+async function fetchAllEnrollments(courseId) {
+  const allEnrollments = [];
+  let url = `/api/v1/courses/${courseId}/enrollments?per_page=100&type[]=StudentEnrollment&include[]=user`;
+  
+  try {
+    const response = await canvasRequest(url);
+    if (Array.isArray(response)) {
+      allEnrollments.push(...response);
+    }
+  } catch (error) {
+    console.error(`Error fetching enrollments for course ${courseId}:`, error.message);
+  }
+  
+  return allEnrollments;
+}
+
 // Fetch all Canvas data
 export async function fetchCanvasData() {
   try {
@@ -80,27 +97,37 @@ export async function fetchCanvasData() {
       console.log('⚠️  Could not fetch user info:', error.message);
     }
 
-    // Fetch courses - ONLY student courses
+    // Fetch courses - both student and teacher courses
     let courses = [];
+    let studentCourses = [];
+    let teacherCourses = [];
     try {
       // Fetch both student and teacher courses
-      const [studentCourses, teacherCourses] = await Promise.all([
+      [studentCourses, teacherCourses] = await Promise.all([
         canvasRequest('/api/v1/courses?enrollment_type=student&per_page=100&include[]=enrollments').catch(() => []),
         canvasRequest('/api/v1/courses?enrollment_type=teacher&per_page=100&include[]=enrollments').catch(() => [])
       ]);
       
       // Combine and deduplicate courses by ID
+      // Track which courses are teacher courses
+      const teacherCourseIds = new Set(teacherCourses.map(c => c.id));
       const courseMap = new Map();
       [...studentCourses, ...teacherCourses].forEach(course => {
         if (course.id && !courseMap.has(course.id)) {
+          // Mark if this is a teacher course
+          course._isTeacherCourse = teacherCourseIds.has(course.id);
           courseMap.set(course.id, course);
         } else if (course.id) {
           // Merge enrollments if course already exists
           const existing = courseMap.get(course.id);
           if (course.enrollments && existing.enrollments) {
             existing.enrollments = [...existing.enrollments, ...course.enrollments];
-            courseMap.set(course.id, existing);
           }
+          // Update teacher flag if this course is a teacher course
+          if (teacherCourseIds.has(course.id)) {
+            existing._isTeacherCourse = true;
+          }
+          courseMap.set(course.id, existing);
         }
       });
       courses = Array.from(courseMap.values());
@@ -220,19 +247,32 @@ export async function fetchCanvasData() {
       courses.map(async (course) => {
         try {
           // Check if user is teacher/instructor for this course
-          const isTeacher = course.enrollments?.some(e => 
-            e.type === 'TeacherEnrollment' || 
-            e.type === 'TaEnrollment' || 
-            e.type === 'DesignerEnrollment'
-          ) || course.enrollment_type === 'teacher' || course.enrollment_type === 'ta';
+          // Use the _isTeacherCourse flag we set, or check enrollments/enrollment_type
+          const isTeacher = course._isTeacherCourse || 
+            course.enrollments?.some(e => 
+              e.type === 'TeacherEnrollment' || 
+              e.type === 'TaEnrollment' || 
+              e.type === 'DesignerEnrollment'
+            ) || 
+            course.enrollment_type === 'teacher' || 
+            course.enrollment_type === 'ta';
+
+          console.log(`📝 Course ${course.id} (${course.name}): isTeacher=${isTeacher}`);
 
           const [assignments, modules, syllabus, enrollments] = await Promise.all([
             canvasRequest(`/api/v1/courses/${course.id}/assignments?per_page=100`).catch(() => []),
             canvasRequest(`/api/v1/courses/${course.id}/modules?per_page=100`).catch(() => []),
             canvasRequest(`/api/v1/courses/${course.id}?include[]=syllabus_body`).catch(() => null),
-            // Only fetch enrollments if user is a teacher
-            isTeacher ? canvasRequest(`/api/v1/courses/${course.id}/enrollments?per_page=100&type[]=StudentEnrollment&include[]=user`).catch(() => []) : Promise.resolve([])
+            // Only fetch enrollments if user is a teacher - use helper to get all enrollments
+            isTeacher ? fetchAllEnrollments(course.id).catch((err) => {
+              console.error(`Error fetching enrollments for course ${course.id}:`, err.message);
+              return [];
+            }) : Promise.resolve([])
           ]);
+          
+          if (isTeacher) {
+            console.log(`👥 Fetched ${enrollments.length} student enrollments for course ${course.id} (${course.name})`);
+          }
           
           // Extract syllabus from course data
           const courseSyllabus = syllabus?.syllabus_body || null;
@@ -287,18 +327,35 @@ export async function fetchCanvasData() {
           );
 
           // Process enrollments to extract student information
-          const students = enrollments
-            .filter(e => e.type === 'StudentEnrollment' && e.user)
-            .map(e => ({
-              id: e.user.id,
-              name: e.user.name,
-              email: e.user.email || e.user.login_id,
-              sortable_name: e.user.sortable_name,
-              avatar_url: e.user.avatar_url,
-              enrollment_id: e.id,
-              enrollment_state: e.enrollment_state,
-              last_activity_at: e.last_activity_at
-            }));
+          let students = [];
+          if (enrollments && Array.isArray(enrollments)) {
+            students = enrollments
+              .filter(e => {
+                // Filter for student enrollments that have user data
+                const isStudentEnrollment = e.type === 'StudentEnrollment';
+                const hasUser = e.user && (e.user.id || e.user.name);
+                if (isTeacher && !isStudentEnrollment) {
+                  console.log(`⚠️  Skipping non-student enrollment type: ${e.type} for course ${course.id}`);
+                }
+                return isStudentEnrollment && hasUser;
+              })
+              .map(e => ({
+                id: e.user.id,
+                name: e.user.name || e.user.display_name || 'Unknown',
+                email: e.user.email || e.user.login_id || '',
+                sortable_name: e.user.sortable_name,
+                avatar_url: e.user.avatar_url,
+                enrollment_id: e.id,
+                enrollment_state: e.enrollment_state || 'active',
+                last_activity_at: e.last_activity_at
+              }));
+            
+            if (isTeacher) {
+              console.log(`✅ Processed ${students.length} students from ${enrollments.length} enrollments for course ${course.id}`);
+            }
+          } else if (isTeacher) {
+            console.log(`⚠️  No enrollments array found for course ${course.id} (enrollments type: ${typeof enrollments})`);
+          }
 
           return {
             ...course,
@@ -327,30 +384,44 @@ export async function fetchCanvasData() {
     try {
       user = await canvasRequest('/api/v1/users/self');
       
-      // Determine user role based on course enrollments
-      const teacherCourses = courseData.filter(c => c.isTeacher);
-      const studentCourses = courseData.filter(c => !c.isTeacher);
+      // Determine user role based on the original course arrays fetched from API
+      // These arrays are guaranteed to be correct based on enrollment_type parameter
+      // Filter to only published/active courses for role detection
+      const publishedTeacherCourses = teacherCourses.filter(course => 
+        course.workflow_state === 'available' || course.workflow_state === 'active'
+      );
+      const publishedStudentCourses = studentCourses.filter(course => 
+        course.workflow_state === 'available' || course.workflow_state === 'active'
+      );
       
-      if (teacherCourses.length > 0) {
+      // Professor takes priority: if user has ANY teacher courses, they're a professor
+      if (publishedTeacherCourses.length > 0) {
         userRoles.push('professor');
-      }
-      if (studentCourses.length > 0) {
+        console.log(`👨‍🏫 User role: Professor (${publishedTeacherCourses.length} teaching course${publishedTeacherCourses.length !== 1 ? 's' : ''})`);
+      } 
+      // If no teacher courses but has student courses, they're a student
+      else if (publishedStudentCourses.length > 0) {
         userRoles.push('student');
+        console.log(`🎓 User role: Student (${publishedStudentCourses.length} course${publishedStudentCourses.length !== 1 ? 's' : ''})`);
       }
-      
-      // If no roles detected, default based on enrollment type
-      if (userRoles.length === 0) {
-        const allCourses = await canvasRequest('/api/v1/courses?per_page=100').catch(() => []);
-        const hasTeacherRole = allCourses.some(c => 
-          c.enrollments?.some(e => 
-            e.type === 'TeacherEnrollment' || 
-            e.type === 'TaEnrollment'
-          )
-        );
-        userRoles = hasTeacherRole ? ['professor'] : ['student'];
+      // If no published courses, check all courses (including unpublished)
+      else if (teacherCourses.length > 0) {
+        userRoles.push('professor');
+        console.log(`👨‍🏫 User role: Professor (${teacherCourses.length} teaching course${teacherCourses.length !== 1 ? 's' : ''} - including unpublished)`);
+      }
+      else if (studentCourses.length > 0) {
+        userRoles.push('student');
+        console.log(`🎓 User role: Student (${studentCourses.length} course${studentCourses.length !== 1 ? 's' : ''} - including unpublished)`);
+      }
+      // If still no role detected, default to student
+      else {
+        userRoles.push('student');
+        console.log('🎓 User role: Student (default - no courses found)');
       }
     } catch (e) {
-      // Ignore if user fetch fails
+      console.error('❌ Error determining user role:', e.message);
+      // Default to student if role detection fails
+      userRoles = ['student'];
     }
 
     const data = {

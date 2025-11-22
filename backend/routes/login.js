@@ -84,7 +84,7 @@ router.post('/login', async (req, res) => {
         createdAt: new Date()
       });
       
-      // Save session info for sync service
+      // Save session info
       const envPath = path.join(__dirname, '../.env');
       const envContent = `# Canvas API Configuration (Password-based login)
 CANVAS_BASE_URL=${baseUrl}
